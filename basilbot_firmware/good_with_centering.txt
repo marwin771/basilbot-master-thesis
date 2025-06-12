@@ -1,0 +1,130 @@
+#include <ESP32Servo.h>
+
+// ===========================================
+// CONFIGURATION SECTION
+// ===========================================
+const int NUM_SERVOS = 4;
+const int servoPins[NUM_SERVOS] = {1, 2, 3, 4};
+
+const int centerAngles[NUM_SERVOS] = {
+  40,  // Servo 1 center position (base)
+  15,  // Servo 2 center position (shoulder)
+  120, // Servo 3 center position (elbow)
+  70   // Servo 4 center position (end-effector)
+};
+
+const int angleLimits[NUM_SERVOS][2] = {
+  {0, 180},   // Servo 1
+  {10, 170},  // Servo 2
+  {10, 130},  // Servo 3
+  {0, 180}    // Servo 4
+};
+
+Servo servos[NUM_SERVOS];
+int servoAngles[NUM_SERVOS] = {
+  centerAngles[0],
+  centerAngles[1],
+  centerAngles[2],
+  centerAngles[3]
+};
+
+// === Movement timing control ===
+unsigned long lastMoveTime = 0;
+unsigned long moveCooldown = 250;  // ms between allowed moves
+
+// ===========================================
+// Smooth movement helper
+// ===========================================
+void moveSmooth(int index, int targetAngle, int stepDelay = 5) {
+  int current = servoAngles[index];
+  int step = (current < targetAngle) ? 1 : -1;
+
+  for (int angle = current; angle != targetAngle; angle += step) {
+    servos[index].write(angle);
+    delay(stepDelay);
+  }
+
+  servos[index].write(targetAngle);
+  servoAngles[index] = targetAngle;
+}
+
+// ===========================================
+// SETUP
+// ===========================================
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    servos[i].setPeriodHertz(50);
+    servos[i].attach(servoPins[i], 500, 2400);
+    servos[i].write(centerAngles[i]);
+  }
+
+  Serial.println("✅ ESP32 Ready!");
+}
+
+// ===========================================
+// LOOP
+// ===========================================
+void loop() {
+  if (Serial.available() > 0) {
+    String msg = Serial.readStringUntil('\n');
+    msg.trim();
+    Serial.println("🛰️ Received: " + msg);
+
+    // Early exit during cooldown
+    if (millis() - lastMoveTime < moveCooldown) {
+      Serial.println("⏳ Cooldown active, skipping move.");
+      return;
+    }
+
+    if (msg.length() > 0 && msg.indexOf(',') != -1) {
+      float x = msg.substring(0, msg.indexOf(',')).toFloat();
+      float y = msg.substring(msg.indexOf(',') + 1).toFloat();
+
+      Serial.printf("✅ Parsed X=%.3f Y=%.3f\n", x, y);
+      Serial.println("ACK");
+
+      float dx = x - 0.5;
+      float dy = y - 0.5;
+
+      // Dead zone for center lock
+      float deadZone = 0.05;  // 5% tolerance
+
+      // Dynamic step size
+      int stepSizeX = (abs(dx) > 0.2) ? 3 : (abs(dx) > 0.1 ? 2 : 1);
+      int stepSizeY = (abs(dy) > 0.2) ? 3 : (abs(dy) > 0.1 ? 2 : 1);
+
+      bool moved = false;
+
+      // === X-axis: Servo 0 (left/right)
+      if (abs(dx) > deadZone) {
+        int delta = (dx > 0) ? stepSizeX : -stepSizeX;
+        int target = constrain(servoAngles[0] + delta, angleLimits[0][0], angleLimits[0][1]);
+        Serial.printf("📍 Servo 0: %d → %d\n", servoAngles[0], target);
+        moveSmooth(0, target, 5);
+        moved = true;
+      } else {
+        Serial.println("✅ X centered enough, no move.");
+      }
+
+      // === Y-axis: Servo 1 (up/down)
+      if (abs(dy) > deadZone) {
+        int delta = (dy < 0) ? -stepSizeY : stepSizeY;
+        int target = constrain(servoAngles[1] + delta, angleLimits[1][0], angleLimits[1][1]);
+        Serial.printf("📍 Servo 1: %d → %d\n", servoAngles[1], target);
+        moveSmooth(1, target, 5);
+        moved = true;
+      } else {
+        Serial.println("✅ Y centered enough, no move.");
+      }
+
+      if (moved) {
+        lastMoveTime = millis();
+      }
+    }
+  }
+
+  delay(10);  // Fast polling
+}

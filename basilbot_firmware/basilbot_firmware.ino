@@ -4,7 +4,7 @@ const int NUM_SERVOS = 5;
 const int servoPins[NUM_SERVOS] = {1, 2, 3, 4, 5};  // Physical pin mapping
 
 // Center/start angles
-const int centerAngles[NUM_SERVOS] = {40, 100, 40, 60, 10};
+const int centerAngles[NUM_SERVOS] = {40, 100, 40, 60, 120};
 // Angle limits per servo
 const int angleLimits[NUM_SERVOS][2] = {
   {0, 180}, {10, 170}, {10, 130}, {0, 180}, {0, 180}
@@ -18,18 +18,23 @@ const int angleLimits[NUM_SERVOS][2] = {
 #define CUTTER_SERVO   4  // Cutter action
 
 Servo servos[NUM_SERVOS];
-int servoAngles[NUM_SERVOS] = {40, 55, 120, 90, 70};
+int servoAngles[NUM_SERVOS];
 
 unsigned long lastMoveTime = 0;
 unsigned long moveCooldown = 250;
 
 void moveSmooth(int index, int targetAngle, int stepDelay = 5) {
+  targetAngle = constrain(targetAngle, angleLimits[index][0], angleLimits[index][1]);
   int current = servoAngles[index];
+  int diff = abs(targetAngle - current);
+  if (diff == 0) return;
+
+  int dynamicDelay = (diff <= 2) ? 2 : stepDelay;
   int step = (current < targetAngle) ? 1 : -1;
 
   for (int angle = current; angle != targetAngle; angle += step) {
     servos[index].write(angle);
-    delay(stepDelay);
+    delay(dynamicDelay);
   }
 
   servos[index].write(targetAngle);
@@ -44,6 +49,7 @@ void setup() {
     servos[i].setPeriodHertz(50);
     servos[i].attach(servoPins[i], 500, 2400);
     servos[i].write(centerAngles[i]);
+    servoAngles[i] = centerAngles[i];  // ✅ Sync initial angle state
   }
 
   Serial.println("✅ ESP32 Ready!");
@@ -63,9 +69,9 @@ void loop() {
     }
 
     if (msg == "CUT") {
-      moveSmooth(CUTTER_SERVO, 150);  // extend cutter
+      moveSmooth(CUTTER_SERVO, 150);  // Extend cutter
       delay(300);
-      moveSmooth(CUTTER_SERVO, centerAngles[CUTTER_SERVO]);  // reset
+      moveSmooth(CUTTER_SERVO, centerAngles[CUTTER_SERVO]);  // Reset
       Serial.println("✂️ Cut performed.");
       return;
     }
@@ -89,19 +95,22 @@ void loop() {
       int stepSizeY = (abs(dy) > 0.2) ? 3 : (abs(dy) > 0.1 ? 2 : 1);
 
       bool moved = false;
+
       if (abs(dx) > deadZone) {
         int delta = (dx > 0) ? stepSizeX : -stepSizeX;
-        moveSmooth(BASE_SERVO, constrain(servoAngles[BASE_SERVO] + delta, angleLimits[BASE_SERVO][0], angleLimits[BASE_SERVO][1]));
+        moveSmooth(BASE_SERVO, servoAngles[BASE_SERVO] + delta);
         moved = true;
       }
 
       if (abs(dy) > deadZone) {
         int delta = (dy < 0) ? -stepSizeY : stepSizeY;
-        moveSmooth(SHOULDER_SERVO, constrain(servoAngles[SHOULDER_SERVO] + delta, angleLimits[SHOULDER_SERVO][0], angleLimits[SHOULDER_SERVO][1]));
+        moveSmooth(SHOULDER_SERVO, servoAngles[SHOULDER_SERVO] + delta);
         moved = true;
       }
 
-      if (moved) lastMoveTime = millis();
+      if (moved) {
+        lastMoveTime = millis();
+      }
     }
   }
 
