@@ -11,6 +11,19 @@ from loralib import Linear as LoRALinear
 import matplotlib.pyplot as plt
 import pandas as pd
 
+# === Config ===
+image_dir = "E:/Master_AI_project/Basilbot/data/images"
+mask_dir = "E:/Master_AI_project/Basilbot/data/masks"
+checkpoint_path = "E:/Master_AI_project/Basilbot/sam_vit_h_4b8939.pth"
+model_type = "vit_h"
+batch_size = 2
+image_size = 1024
+lr = 1e-4
+epochs = 100
+patience = 10
+log_file = "training_log.txt"
+
+# === LoRA Injection ===
 def apply_lora(module, r=4, lora_alpha=1.0, lora_dropout=0.0):
     for name, child in module.named_children():
         if isinstance(child, torch.nn.Linear):
@@ -25,19 +38,7 @@ def apply_lora(module, r=4, lora_alpha=1.0, lora_dropout=0.0):
         else:
             apply_lora(child, r, lora_alpha, lora_dropout)
 
-# === Config ===
-image_dir = "E:/Master_AI_project/Basilbot/data/images"
-mask_dir = "E:/Master_AI_project/Basilbot/data/masks"
-checkpoint_path = "E:/Master_AI_project/Basilbot/sam_vit_h_4b8939.pth"
-model_type = "vit_h"
-batch_size = 2
-image_size = 1024
-lr = 1e-4
-epochs = 100
-patience = 5
-log_file = "training_log.txt"
-
-# === Dataset ===
+# === Dataset (No Augmentation) ===
 class PetioleDataset(Dataset):
     def __init__(self, image_dir, mask_dir, image_size):
         self.image_dir = image_dir
@@ -52,7 +53,8 @@ class PetioleDataset(Dataset):
 
         self.mask_transform = transforms.Compose([
             transforms.Resize((image_size, image_size), interpolation=Image.NEAREST),
-            transforms.ToTensor()
+            transforms.ToTensor(),
+            transforms.Lambda(lambda t: (t > 0.5).float())  # ensure binary
         ])
 
     def __len__(self):
@@ -61,7 +63,7 @@ class PetioleDataset(Dataset):
     def __getitem__(self, idx):
         fname = self.filenames[idx]
         img_path = os.path.join(self.image_dir, fname)
-        mask_path = os.path.join(self.mask_dir, fname.replace(".jpg", "").replace(".jpeg", "").replace(".png", "") + "_001.png")
+        mask_path = os.path.join(self.mask_dir, os.path.splitext(fname)[0] + ".png")
 
         img = Image.open(img_path).convert("RGB")
         mask = Image.open(mask_path).convert("L")
@@ -75,6 +77,26 @@ val_size = len(dataset) - train_size
 train_set, val_set = random_split(dataset, [train_size, val_size])
 train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_set, batch_size=batch_size)
+
+# === Visualize Sample ===
+sample_loader = DataLoader(dataset, batch_size=4, shuffle=True)
+sample_imgs, sample_masks = next(iter(sample_loader))
+
+fig, axes = plt.subplots(4, 2, figsize=(8, 12))
+for i in range(4):
+    img = sample_imgs[i].permute(1, 2, 0).numpy()
+    mask = sample_masks[i].squeeze().numpy()
+    axes[i, 0].imshow(np.clip(img, 0, 1))
+    axes[i, 0].set_title("Image")
+    axes[i, 1].imshow(mask, cmap='gray')
+    axes[i, 1].set_title("Mask")
+    axes[i, 0].axis('off')
+    axes[i, 1].axis('off')
+
+plt.tight_layout()
+plt.savefig("sample_preview.png")
+plt.show()
+print("🖼️ Saved sample preview as sample_preview.png")
 
 # === Load SAM + LoRA ===
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -101,51 +123,23 @@ def dice_coefficient(pred, target, epsilon=1e-6):
     dice = (2 * intersection + epsilon) / (union + epsilon)
     return dice.mean().item()
 
-# === Early stopping initialization ===
+# === Early Stopping ===
 best_val_loss = float('inf')
-best_train_loss = float('inf')
 best_state = None
 patience_counter = 0
-
-# === Training Loop ===
-train_losses, val_losses = [] , []
+train_losses, val_losses = [], []
 train_dices, val_dices = [], []
 
 with open(log_file, 'w') as log:
-    for epoch in range(epochs):
-        sam.train()
-        train_loss, train_dice = 0, 0
-        for imgs, masks in train_loader:
-            imgs, masks = imgs.to(device), masks.to(device)
-            with torch.no_grad():
-                img_embeddings = sam.image_encoder(imgs)
-                sparse_embeddings, dense_embeddings = sam.prompt_encoder(points=None, boxes=None, masks=None)
-            low_res_masks = sam.mask_decoder(
-                image_embeddings=img_embeddings,
-                image_pe=sam.prompt_encoder.get_dense_pe(),
-                sparse_prompt_embeddings=sparse_embeddings,
-                dense_prompt_embeddings=dense_embeddings,
-                multimask_output=False
-            )[0]
-            upsampled = F.interpolate(low_res_masks, size=(image_size, image_size), mode="bilinear", align_corners=False)
-            loss = compute_loss(upsampled, masks)
-            dice = dice_coefficient(upsampled, masks)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-            train_dice += dice
-
-        train_loss /= len(train_loader)
-        train_dice /= len(train_loader)
-
-        sam.eval()
-        val_loss, val_dice = 0, 0
-        with torch.no_grad():
-            for imgs, masks in val_loader:
+    try:
+        for epoch in range(epochs):
+            sam.train()
+            train_loss, train_dice = 0, 0
+            for imgs, masks in train_loader:
                 imgs, masks = imgs.to(device), masks.to(device)
-                img_embeddings = sam.image_encoder(imgs)
-                sparse_embeddings, dense_embeddings = sam.prompt_encoder(points=None, boxes=None, masks=None)
+                with torch.no_grad():
+                    img_embeddings = sam.image_encoder(imgs)
+                    sparse_embeddings, dense_embeddings = sam.prompt_encoder(points=None, boxes=None, masks=None)
                 low_res_masks = sam.mask_decoder(
                     image_embeddings=img_embeddings,
                     image_pe=sam.prompt_encoder.get_dense_pe(),
@@ -156,34 +150,61 @@ with open(log_file, 'w') as log:
                 upsampled = F.interpolate(low_res_masks, size=(image_size, image_size), mode="bilinear", align_corners=False)
                 loss = compute_loss(upsampled, masks)
                 dice = dice_coefficient(upsampled, masks)
-                val_loss += loss.item()
-                val_dice += dice
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+                train_dice += dice
 
-        val_loss /= len(val_loader)
-        val_dice /= len(val_loader)
+            train_loss /= len(train_loader)
+            train_dice /= len(train_loader)
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        train_dices.append(train_dice)
-        val_dices.append(val_dice)
+            sam.eval()
+            val_loss, val_dice = 0, 0
+            with torch.no_grad():
+                for imgs, masks in val_loader:
+                    imgs, masks = imgs.to(device), masks.to(device)
+                    img_embeddings = sam.image_encoder(imgs)
+                    sparse_embeddings, dense_embeddings = sam.prompt_encoder(points=None, boxes=None, masks=None)
+                    low_res_masks = sam.mask_decoder(
+                        image_embeddings=img_embeddings,
+                        image_pe=sam.prompt_encoder.get_dense_pe(),
+                        sparse_prompt_embeddings=sparse_embeddings,
+                        dense_prompt_embeddings=dense_embeddings,
+                        multimask_output=False
+                    )[0]
+                    upsampled = F.interpolate(low_res_masks, size=(image_size, image_size), mode="bilinear", align_corners=False)
+                    loss = compute_loss(upsampled, masks)
+                    dice = dice_coefficient(upsampled, masks)
+                    val_loss += loss.item()
+                    val_dice += dice
 
-        print(f"\nEpoch {epoch+1}/{epochs}")
-        print(f"Train Loss: {train_loss:.4f}, Dice: {train_dice:.4f}")
-        print(f"Val   Loss: {val_loss:.4f}, Dice: {val_dice:.4f}")
-        log.write(f"Epoch {epoch+1}: Train Loss={train_loss:.4f}, Dice={train_dice:.4f} | Val Loss={val_loss:.4f}, Dice={val_dice:.4f}\n")
+            val_loss /= len(val_loader)
+            val_dice /= len(val_loader)
 
-        if val_loss < best_val_loss or train_loss < best_train_loss:
-            best_val_loss = min(val_loss, best_val_loss)
-            best_train_loss = min(train_loss, best_train_loss)
-            best_state = sam.mask_decoder.state_dict()
-            patience_counter = 0
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print("Early stopping triggered.")
-                break
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            train_dices.append(train_dice)
+            val_dices.append(val_dice)
 
-# === Save best model ===
+            print(f"Epoch {epoch+1}/{epochs}")
+            print(f"Train Loss: {train_loss:.4f}, Dice: {train_dice:.4f}")
+            print(f"Val   Loss: {val_loss:.4f}, Dice: {val_dice:.4f}")
+            log.write(f"Epoch {epoch+1}: Train Loss={train_loss:.4f}, Dice={train_dice:.4f} | Val Loss={val_loss:.4f}, Dice={val_dice:.4f}\n")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = sam.mask_decoder.state_dict()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print("Early stopping triggered.")
+                    break
+
+    except KeyboardInterrupt:
+        print("⛔ Interrupted. Saving best weights...")
+
 torch.save(best_state, "lora_sam_mask_decoder.pt")
 print("✅ LoRA weights saved as lora_sam_mask_decoder.pt")
 

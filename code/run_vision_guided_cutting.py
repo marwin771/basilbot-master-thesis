@@ -21,16 +21,18 @@ def apply_lora(module, r=4, lora_alpha=1.0, lora_dropout=0.0):
                 new_layer.bias.data = child.bias.data.clone()
             setattr(module, name, new_layer)
         else:
+        else:
             apply_lora(child, r, lora_alpha, lora_dropout)
 
 # === Settings ===
-stream_url = "http://192.168.1.214:81/stream"
-checkpoint_path = "sam_vit_h_4b8939.pth"
-lora_weights = "lora_sam_mask_decoder.pt"
+#stream_url = "http://192.168.226.188:81/stream"
+stream_url = "http://192.168.1.215:81/stream"
+checkpoint_path = "E:/Master_AI_project/Basilbot/sam_vit_h_4b8939.pth"
+lora_weights = "results/lora_sam_mask_decoder_26.pt"
 model_type = "vit_h"
 image_size = 1024
 center_tolerance = 0.03
-serial_port = "COM7"
+serial_port = "COM6"
 skip_every = 30
 
 # Area thresholds
@@ -83,7 +85,8 @@ try:
         image = cv2.resize(rgb, (image_size, image_size))
         h, w = image_size, image_size
 
-        if not done and frame_count % skip_every == 0:
+        #if not done and frame_count % skip_every == 0:
+        if not done and frame_count > 30 and frame_count % skip_every == 0:
             print("🧠 Running SAM...")
             image_tensor = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).float() / 255.0
             image_tensor = image_tensor.to(device)
