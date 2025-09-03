@@ -64,6 +64,5 @@ vision-guided-basil-harvester/
 ## 🧠 Technical Highlights
 * **LoRA Fine-tuning of SAM**: The Segment Anything Model (SAM) was fine-tuned with LoRA on custom petiole segmentation masks to enable precise detection in basil environments.
 * **EMA Filtering**: Smooths out noisy mask area changes
-* **Occlusion Tolerance**: If petiole is lost after centering, still proceeds with cut
 * **Recorded Videos**: Save raw and annotated views for analysis
 
