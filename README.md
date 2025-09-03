@@ -32,7 +32,6 @@ A low-cost, RGB-camera-based robotic system for **precision basil leaf harvestin
 vision-guided-basil-harvester/
 ├── arduino/                 # ESP32 firmware sketch (.ino)
 ├── python/                  # Vision + control logic
-├── models/                  # SAM + LoRA weights
 ├── dataset/                 # Training images/masks
 ├── recordings/              # Video outputs from robot runs
 ├── docs/                    # Diagrams and visualizations
